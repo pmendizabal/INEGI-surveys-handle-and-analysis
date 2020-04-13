@@ -1,0 +1,244 @@
+#En este script se plantea hacer un pseudo scrapping del INEGI para sacar algunos indicadores socioeconomicos
+#de la ENOE que finalmente servirán como imputaciones a nuestros clientes
+
+import requests
+import zipfile
+import os
+import fnmatch
+import pandas as pd 
+import numpy as np
+import matplotlib
+
+
+#Aqui descargamos el archivo desde la pagina del inegi
+#Esta es la ENOE para el cuarto trimestre del 2019, la encuesta tiene esta periodicidad
+
+url = 'https://www.inegi.org.mx/contenidos/programas/enoe/15ymas/microdatos/2019trim4_csv.zip'
+myfile = requests.get(url)
+
+filename = url.split('/')[-1]
+
+with open(filename, 'wb') as out_file:
+    out_file.write(myfile.content)
+    
+#aqui esta el descriptor de las tablas, solo se debe ir a la tabla de sociodemograficos, ademas se explica las tecnicas
+url_2 = 'https://www.inegi.org.mx/contenidos/programas/enoe/15ymas/doc/fd_c_bas_amp_15ymas.pdf'
+descript = requests.get(url_2)
+
+desc_name = url_2.split('/')[-1]
+
+with open(desc_name, 'wb') as out_file_2:
+    out_file_2.write(descript.content)
+
+#Aqui se descomprime el archivo de las tablas
+with zipfile.ZipFile(filename, 'r') as zip_ref:
+    zip_ref.extractall()
+    
+#Aqui solo se borran las demas tablas para quedarnos con la sociodemografica, falta borrar el zip 
+filess = []
+for filenames in os.walk("./").__next__()[2]:
+    filess.append(filenames)
+
+for file in fnmatch.filter(filess, '[!SDEM]*.CSV'):
+    try:
+        os.remove(file)
+    except OSError:
+        print("Error while deleting file")
+        
+for file in fnmatch.filter(filess, '[!SDEM]*_csv.zip'):
+    try:
+        os.remove(file)
+    except OSError:
+        print("Error while deleting file")
+#Obtenemos el nombre del archivo para poder usarlo en el read csv
+enoe_obj = fnmatch.filter(filess, 'SDEM*.CSV')
+enoe_obj1 = ''.join(enoe_obj)
+#Utilizamos la funcion csv para llevarla a dataframe, utilice ese enconding porque hay algunos caracteres en español
+enoe = pd.read_csv(enoe_obj1, encoding = 'latin')
+enoe_df = pd.DataFrame(enoe)
+
+#Aqui nos quedamos con las columnas necesarias, que son sexo, edad, si es ocupado, estado conyugal, posicion en la 
+#ocupacion, rama economica, ingreso mensual, horas de trabajo, entidad, factor de expansion
+
+#Para mas informacion de estas columnas, ir al descriptor de archivos de la ENOE
+enoe_mod = enoe_df[["sex", "eda", "clase2", "cs_p13_1", "pos_ocu", "rama", "c_ocu11c", "ingocup",
+         "hrsocup", "cs_p17", "rama_est2", "fac", "ent"]]
+enoe_mod
+
+#Con esta condicion nos quedamos con los ocupados del trimestre
+enoe_ocu = enoe_mod[enoe_mod['clase2'] == 1]
+#Con esta condicion nos quedamos con la gente de CDMX
+enoe_ocu = enoe_ocu[enoe_ocu['ent'] == 9]
+
+enoe_ocu
+
+#Creamos una columna para recodificar la edad
+conditions = [
+    (enoe_ocu['eda'] >= 0) & (enoe_ocu['eda'] <= 15),
+    (enoe_ocu['eda'] >= 16) & (enoe_ocu['eda'] <= 20),
+    (enoe_ocu['eda'] >= 21) & (enoe_ocu['eda'] <= 30),
+    (enoe_ocu['eda'] >= 31) & (enoe_ocu['eda'] <= 40),
+    (enoe_ocu['eda'] >= 41) & (enoe_ocu['eda'] <= 50),
+    (enoe_ocu['eda'] >= 51)
+]
+
+choices = ['1', '2', '3', '4', '5', '6']
+
+enoe_ocu['rango_edad'] = np.select(conditions, choices)
+
+#Aqui se codifica para crear una nueva columna de ingresos, lo hice porque creo que es mas facil manejar
+
+conditions_2 = [
+    (enoe_ocu['ingocup'] >= 0) & (enoe_ocu['ingocup'] <= 1000),
+    (enoe_ocu['ingocup'] > 1000) & (enoe_ocu['ingocup'] <= 5000),
+    (enoe_ocu['ingocup'] > 5000) & (enoe_ocu['ingocup'] <= 10000),
+    (enoe_ocu['ingocup'] > 10000) & (enoe_ocu['ingocup'] <= 20000),
+    (enoe_ocu['ingocup'] > 20000) & (enoe_ocu['ingocup'] <= 35000),
+    (enoe_ocu['ingocup'] > 35000)
+]
+
+choices_2 = ['ultra_low_income', 'low_income', 'medium_income', 'regular_income', 'high_income', 'super_high_income']
+
+enoe_ocu['rango_ingresos'] = np.select(conditions_2, choices_2)
+
+#Recodificamos el sexo
+enoe_ocu['sex'] = pd.to_numeric(enoe_ocu['sex'])
+conditions_3 = [
+    (enoe_ocu['sex'] == 1),
+    (enoe_ocu['sex'] == 2) 
+]
+
+choices_3 = ['Hombre', 'Mujer']
+
+enoe_ocu['sex'] = np.select(conditions_3, choices_3)
+
+#Reco de posicion en la ocupacion
+enoe_ocu['pos_ocu'] = pd.to_numeric(enoe_ocu['pos_ocu'])
+
+conditions_4 = [
+    (enoe_ocu['pos_ocu'] == 1),
+    (enoe_ocu['pos_ocu'] == 2),
+    (enoe_ocu['pos_ocu'] == 3) 
+]
+
+choices_4 = ['Trabajadores subordinados', 'Empleadores', 'Cuenta propia']
+
+enoe_ocu['pos_ocu'] = np.select(conditions_4, choices_4)
+
+#Reco de rama económica
+enoe_ocu['rama'] = pd.to_numeric(enoe_ocu['rama'])
+
+conditions_5 = [
+    (enoe_ocu['rama'] == 1),
+    (enoe_ocu['rama'] == 2),
+    (enoe_ocu['rama'] == 3),
+    (enoe_ocu['rama'] == 4),
+    (enoe_ocu['rama'] == 5),
+    (enoe_ocu['rama'] == 6),
+    (enoe_ocu['rama'] == 7)
+]
+
+choices_5 = ['construccion', 'manufactura', 'comercio', 'servicios', 'otros', 'agropecuario', 'no especificado']
+
+enoe_ocu['rama'] = np.select(conditions_5, choices_5)
+
+#Reco de condicion en la ocupacion
+enoe_ocu['c_ocu11c'] = pd.to_numeric(enoe_ocu['c_ocu11c'])
+
+conditions_6 = [
+    (enoe_ocu['c_ocu11c'] == 1),
+    (enoe_ocu['c_ocu11c'] == 2),
+    (enoe_ocu['c_ocu11c'] == 3),
+    (enoe_ocu['c_ocu11c'] == 4),
+    (enoe_ocu['c_ocu11c'] == 5),
+    (enoe_ocu['c_ocu11c'] == 6),
+    (enoe_ocu['c_ocu11c'] == 7),
+    (enoe_ocu['c_ocu11c'] == 8),
+    (enoe_ocu['c_ocu11c'] == 9)
+]
+
+choices_6 = ['Profesionales, tecnicos y trabajadores del arte', 'Trabajadores de la educacion', 'Funcionarios y directivos', 
+             'Oficinistas', 'Trabajadores industriales, artesanos y ayudantes', 'Comerciantes', 'Operadores de transporte',
+             'Trabajadores en servicios personales', 'Trabajadores en proteccion y vigilancia']
+
+enoe_ocu['c_ocu11c'] = np.select(conditions_6, choices_6)
+
+#Reco de si es estudiante
+enoe_ocu['cs_p17'] = pd.to_numeric(enoe_ocu['cs_p17'])
+
+conditions_7 = [
+    (enoe_ocu['cs_p17'] == 1),
+    (enoe_ocu['cs_p17'] == 2),
+    (enoe_ocu['cs_p17'] == 9) 
+]
+
+choices_7 = ['Estudiante', 'No estudiante', 'NR']
+
+enoe_ocu['cs_p17'] = np.select(conditions_7, choices_7)
+
+#Reco de subrama economica
+enoe_ocu['rama_est2'] = pd.to_numeric(enoe_ocu['rama_est2'])
+
+conditions_8 = [
+    (enoe_ocu['rama_est2'] == 1),
+    (enoe_ocu['rama_est2'] == 2),
+    (enoe_ocu['rama_est2'] == 3),
+    (enoe_ocu['rama_est2'] == 4),
+    (enoe_ocu['rama_est2'] == 5),
+    (enoe_ocu['rama_est2'] == 6),
+    (enoe_ocu['rama_est2'] == 7),
+    (enoe_ocu['rama_est2'] == 8),
+    (enoe_ocu['rama_est2'] == 9),
+    (enoe_ocu['rama_est2'] == 10),
+    (enoe_ocu['rama_est2'] == 11),
+]
+
+choices_8 = ['Agro', 'Minería y electricidad', 'Manufactura', 'Construcción', 'Comercio', 'Restaurantes y hoteles', 
+             'Transportes, correo y almacenamiento', 'Servicios profesionales, financieros y corporativos', 
+             'Servicios sociales', 'Servicios diversos', 'Gobierno y organismos internacionales']
+
+enoe_ocu['rama_est2'] = np.select(conditions_8, choices_8)
+
+#Reco de grado de estudios
+enoe_ocu['cs_p13_1'] = pd.to_numeric(enoe_ocu['cs_p13_1'])
+
+conditions_9 = [
+    (enoe_ocu['cs_p13_1'] == 0),
+    (enoe_ocu['cs_p13_1'] == 1),
+    (enoe_ocu['cs_p13_1'] == 2),
+    (enoe_ocu['cs_p13_1'] == 3),
+    (enoe_ocu['cs_p13_1'] == 4),
+    (enoe_ocu['cs_p13_1'] == 5),
+    (enoe_ocu['cs_p13_1'] == 6),
+    (enoe_ocu['cs_p13_1'] == 7),
+    (enoe_ocu['cs_p13_1'] == 8),
+    (enoe_ocu['cs_p13_1'] == 9),
+    (enoe_ocu['cs_p13_1'] == 99)
+]
+
+choices_9 = ['Ninguno', 'Preescolar', 'Primaria', 'Secundaria', 'Prepa o bachiller', 'Normal', 
+             'Carrera tecnica', 'Profesional', 'Maestria', 'Doctorado', 'No sabe']
+
+enoe_ocu['cs_p13_1'] = np.select(conditions_9, choices_9)
+
+enoe_ocu
+
+#Renombre de las columnas 
+
+enoe_ocu.columns = ['Sexo', 'Edad', 'Tipo de pob', 'Nivel estudios', 'Posicion ocupacion', 'Rama Eco', 
+                   'Condicion en la ocupacion', 'Ingreso', 'Horas trabajadas a la semana', 'Estudiante', 'Subrama eco',
+                   'Factor', 'Estado', 'Rango edad', 'Rango ingresos']
+
+enoe_ocu
+
+#Empezamos el análisis dependiendo del rango de ingresos que hemos impuesto
+
+enoe_ultra_low = enoe_ocu[enoe_ocu['Rango ingresos'] == 'ultra_low_income']
+
+#Ahora utilizamos el factor de expansion de la encuesta para tener la estimacion poblacional
+enoe_ultra_low = pd.DataFrame(np.repeat(enoe_ultra_low.values, enoe_ultra_low['Factor'].values, axis= 0), 
+                             columns = ['Sexo', 'Edad', 'Tipo de pob', 'Nivel estudios', 'Posicion ocupacion', 'Rama Eco', 
+                   'Condicion en la ocupacion', 'Ingreso', 'Horas trabajadas a la semana', 'Estudiante', 'Subrama eco',
+                   'Factor', 'Estado', 'Rango edad', 'Rango ingresos'])
+
+enoe_ultra_low
